@@ -50,8 +50,9 @@ function tryStartMatch(mode) {
   rooms.set(roomId, room);
 
   const roster = room.players.map(p => ({ id: p.id, name: p.name, team: p.team }));
+  const seed = Math.floor(Math.random() * 1e9);
   for (const p of room.players) {
-    send(p.ws, { type: 'matchFound', roomId, mode, you: p.id, team: p.team, roster });
+    send(p.ws, { type: 'matchFound', roomId, mode, you: p.id, team: p.team, roster, seed });
   }
 }
 
@@ -113,7 +114,15 @@ wss.on('connection', ws => {
         // This player reports that one of their rockets hit someone (trusted for friends-only play)
         const room = roomOf(ws);
         if (!room) return;
-        broadcast(room, { type: 'hit', shooter: ws.playerId, target: msg.target, damage: msg.damage });
+        broadcast(room, { type: 'hit', shooter: msg.by || ws.playerId, target: msg.target, damage: msg.damage });
+        break;
+      }
+
+      case 'barrel': {
+        // A barrel blew up on this player's screen; everyone else blows it up too
+        const room = roomOf(ws);
+        if (!room) return;
+        broadcast(room, { type: 'barrel', id: msg.id, by: msg.by }, ws.playerId);
         break;
       }
 
