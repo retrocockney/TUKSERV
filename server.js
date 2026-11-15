@@ -125,7 +125,14 @@ wss.on('connection', ws => {
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    try {
+    handleMessage(ws, msg);
+    } catch (err) {
+      console.error('Message error (' + (msg && msg.type) + '):', err && err.stack);
+    }
+  });
 
+  function handleMessage(ws, msg) {
     switch (msg.type) {
       case 'setName':
         ws.name = String(msg.name || 'Player').trim().slice(0, MAX_NAME) || 'Player';
@@ -224,7 +231,7 @@ wss.on('connection', ws => {
         send(ws, { type: 'roomLeft' });
         break;
     }
-  });
+  }
 
   ws.on('close', () => {
     console.log('Disconnected: ' + ws.playerId);
@@ -234,3 +241,7 @@ wss.on('connection', ws => {
 });
 
 console.log(`Tuk Tuk Madness server listening on port ${PORT}`);
+
+// Log crashes clearly instead of exiting silently
+process.on('uncaughtException', err => console.error('Uncaught error:', err && err.stack));
+process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
