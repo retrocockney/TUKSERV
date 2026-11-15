@@ -55,6 +55,15 @@ function removeFromQueue(ws) {
   }
 }
 
+// Bots fill a 2v2 or Monster Truck queue once every waiting player is holding E
+function checkFill(mode) {
+  const humans = queues[mode].filter(e => !e.bot);
+  if (humans.length === 0) return;
+  const holding = humans.filter(e => e.ws.holdingE).length;
+  for (const e of humans) send(e.ws, { type: 'fillStatus', holding, total: humans.length });
+  if (holding === humans.length) fillWithBots(mode);
+}
+
 // Builds the roster for a match: teams in 2v2, and one random truck in monster truck mode
 function rosterFor(room) {
   const truckIdx = room.mode === 'truck' ? Math.floor(Math.random() * room.players.length) : -1;
@@ -158,6 +167,14 @@ wss.on('connection', ws => {
         const room = roomOf(ws);
         if (!room) return;
         broadcast(room, { type: 'hit', shooter: msg.by || ws.playerId, target: msg.target, damage: msg.damage, trample: !!msg.trample });
+        break;
+      }
+
+      case 'fillKey': {
+        ws.holdingE = !!msg.down;
+        for (const mode of ['2v2', 'truck']) {
+          if (queues[mode].some(e => e.ws === ws)) checkFill(mode);
+        }
         break;
       }
 
