@@ -4,7 +4,7 @@
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8080;
-const MODES = { '1v1': 2, '2v2': 4 };
+const MODES = { '1v1': 2, '2v2': 4, 'truck': 4 };
 const MAX_NAME = 30;
 
 const wss = new WebSocketServer({ port: PORT });
@@ -32,6 +32,17 @@ function removeFromQueue(ws) {
   }
 }
 
+// Builds the roster for a match: teams in 2v2, and one random truck in monster truck mode
+function rosterFor(room) {
+  const truckIdx = room.mode === 'truck' ? Math.floor(Math.random() * room.players.length) : -1;
+  return room.players.map((p, idx) => ({
+    id: p.id,
+    name: p.name,
+    team: room.mode === '2v2' ? p.team : null,
+    role: room.mode === 'truck' ? (idx === truckIdx ? 'truck' : 'tuk') : 'player'
+  }));
+}
+
 function tryStartMatch(mode) {
   const need = MODES[mode];
   const q = queues[mode];
@@ -49,7 +60,7 @@ function tryStartMatch(mode) {
   });
   rooms.set(roomId, room);
 
-  const roster = room.players.map(p => ({ id: p.id, name: p.name, team: p.team }));
+  const roster = rosterFor(room);
   const seed = Math.floor(Math.random() * 1e9);
   for (const p of room.players) {
     send(p.ws, { type: 'matchFound', roomId, mode, you: p.id, team: p.team, roster, seed });
@@ -114,7 +125,7 @@ wss.on('connection', ws => {
         // This player reports that one of their rockets hit someone (trusted for friends-only play)
         const room = roomOf(ws);
         if (!room) return;
-        broadcast(room, { type: 'hit', shooter: msg.by || ws.playerId, target: msg.target, damage: msg.damage });
+        broadcast(room, { type: 'hit', shooter: msg.by || ws.playerId, target: msg.target, damage: msg.damage, trample: !!msg.trample });
         break;
       }
 
@@ -136,7 +147,7 @@ wss.on('connection', ws => {
         broadcast(room, { type: 'rematchVotes', ready, total: room.players.length });
         if (room.players.length > 0 && ready >= room.players.length) {
           room.rematch.clear();
-          const roster = room.players.map(p => ({ id: p.id, name: p.name, team: p.team }));
+          const roster = rosterFor(room);
           broadcast(room, { type: 'rematchStart', seed: Math.floor(Math.random() * 1e9), roster });
         }
         break;
