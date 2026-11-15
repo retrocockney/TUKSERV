@@ -62,7 +62,7 @@ function rosterFor(room) {
     id: p.id,
     name: p.name,
     bot: !!p.bot,
-    team: room.mode === '2v2' ? p.team : null,
+    team: room.mode === '2v2' ? p.team : (room.mode === 'truck' ? (idx === truckIdx ? 'truck' : 'tuks') : null),
     role: room.mode === 'truck' ? (idx === truckIdx ? 'truck' : 'tuk') : 'player'
   }));
 }
@@ -104,8 +104,12 @@ function leaveRoom(ws) {
   ws.roomId = null;
 }
 
+wss.on('error', err => console.error('Server error:', err && err.message));
+
 wss.on('connection', ws => {
+  ws.on('error', err => console.error('Socket error:', err && err.message));
   ws.playerId = 'p' + Math.random().toString(36).slice(2, 8);
+  console.log('Connected: ' + ws.playerId + ' (' + wss.clients.size + ' online)');
   ws.name = 'Player';
   send(ws, { type: 'hello', id: ws.playerId });
 
@@ -206,6 +210,7 @@ wss.on('connection', ws => {
   });
 
   ws.on('close', () => {
+    console.log('Disconnected: ' + ws.playerId);
     removeFromQueue(ws);
     leaveRoom(ws);
   });
