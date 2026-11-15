@@ -5,6 +5,7 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8080;
 const MODES = { '1v1': 2, '2v2': 4, 'truck': 4 };
+const BOT_WAIT_MS = 15000; // how long a queued player waits before bots fill the match
 const MAX_NAME = 30;
 
 const wss = new WebSocketServer({ port: PORT });
@@ -13,7 +14,7 @@ const rooms = new Map();
 let nextId = 1;
 
 function send(ws, msg) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
 function roomOf(ws) {
@@ -26,9 +27,31 @@ function broadcast(room, msg, exceptId = null) {
   }
 }
 
+const botTimers = {};
+let nextBotId = 1;
+let nextBotName = 1;
+
+function clearBotTimer(mode) {
+  if (botTimers[mode]) { clearTimeout(botTimers[mode]); botTimers[mode] = null; }
+}
+
+// Starts the bot countdown once a real player is waiting in a queue
+function startBotTimer(mode) {
+  if (botTimers[mode] || !queues[mode].some(e => !e.bot)) return;
+  botTimers[mode] = setTimeout(() => { botTimers[mode] = null; fillWithBots(mode); }, BOT_WAIT_MS);
+}
+
+function fillWithBots(mode) {
+  const q = queues[mode];
+  if (!q.some(e => !e.bot)) return;
+  while (q.length < MODES[mode]) q.push({ bot: true, name: 'BOT ' + nextBotName++ });
+  tryStartMatch(mode);
+}
+
 function removeFromQueue(ws) {
   for (const mode of Object.keys(queues)) {
     queues[mode] = queues[mode].filter(p => p.ws !== ws);
+    if (!queues[mode].some(e => !e.bot)) clearBotTimer(mode);
   }
 }
 
@@ -38,6 +61,7 @@ function rosterFor(room) {
   return room.players.map((p, idx) => ({
     id: p.id,
     name: p.name,
+    bot: !!p.bot,
     team: room.mode === '2v2' ? p.team : null,
     role: room.mode === 'truck' ? (idx === truckIdx ? 'truck' : 'tuk') : 'player'
   }));
@@ -49,14 +73,18 @@ function tryStartMatch(mode) {
   if (q.length < need) return;
 
   const picked = q.splice(0, need);
+  if (!q.some(e => !e.bot)) clearBotTimer(mode);
   const roomId = 'room' + nextId++;
   const room = { id: roomId, mode, players: [] };
 
   picked.forEach((entry, idx) => {
     const team = mode === '2v2' ? (idx < 2 ? 'blue' : 'orange') : null;
-    const player = { id: entry.ws.playerId, name: entry.name, team, ws: entry.ws };
-    room.players.push(player);
-    entry.ws.roomId = roomId;
+    if (entry.bot) {
+      room.players.push({ id: 'bot-' + nextBotId++, name: entry.name, team, ws: null, bot: true });
+    } else {
+      room.players.push({ id: entry.ws.playerId, name: entry.name, team, ws: entry.ws });
+      entry.ws.roomId = roomId;
+    }
   });
   rooms.set(roomId, room);
 
@@ -72,7 +100,7 @@ function leaveRoom(ws) {
   if (!room) return;
   room.players = room.players.filter(p => p.ws !== ws);
   broadcast(room, { type: 'playerLeft', id: ws.playerId });
-  if (room.players.length === 0) rooms.delete(room.id);
+  if (!room.players.some(p => !p.bot)) rooms.delete(room.id);
   ws.roomId = null;
 }
 
@@ -129,6 +157,22 @@ wss.on('connection', ws => {
         break;
       }
 
+      case 'botState': {
+        // The host reports a bot's position; only bots in this room are accepted
+        const room = roomOf(ws);
+        if (!room || !room.players.some(p => p.id === msg.id && p.bot)) return;
+        broadcast(room, { type: 'state', id: msg.id, x: msg.x, y: msg.y, z: msg.z, heading: msg.heading,
+          health: msg.health, alive: msg.alive, boosting: msg.boosting, gunAim: msg.gunAim }, ws.playerId);
+        break;
+      }
+
+      case 'botFire': {
+        const room = roomOf(ws);
+        if (!room || !room.players.some(p => p.id === msg.id && p.bot)) return;
+        broadcast(room, { type: 'fire', id: msg.id, origin: msg.origin, dir: msg.dir }, ws.playerId);
+        break;
+      }
+
       case 'barrel': {
         // A barrel blew up on this player's screen; everyone else blows it up too
         const room = roomOf(ws);
@@ -143,9 +187,10 @@ wss.on('connection', ws => {
         if (!room) return;
         if (!room.rematch) room.rematch = new Set();
         room.rematch.add(ws.playerId);
-        const ready = room.players.filter(p => room.rematch.has(p.id)).length;
-        broadcast(room, { type: 'rematchVotes', ready, total: room.players.length });
-        if (room.players.length > 0 && ready >= room.players.length) {
+        const humans = room.players.filter(p => !p.bot);
+        const ready = humans.filter(p => room.rematch.has(p.id)).length;
+        broadcast(room, { type: 'rematchVotes', ready, total: humans.length });
+        if (humans.length > 0 && ready >= humans.length) {
           room.rematch.clear();
           const roster = rosterFor(room);
           broadcast(room, { type: 'rematchStart', seed: Math.floor(Math.random() * 1e9), roster });
