@@ -126,6 +126,22 @@ wss.on('connection', ws => {
         break;
       }
 
+      case 'rematch': {
+        // Everyone in the room has to ask for a rematch before a new match starts
+        const room = roomOf(ws);
+        if (!room) return;
+        if (!room.rematch) room.rematch = new Set();
+        room.rematch.add(ws.playerId);
+        const ready = room.players.filter(p => room.rematch.has(p.id)).length;
+        broadcast(room, { type: 'rematchVotes', ready, total: room.players.length });
+        if (room.players.length > 0 && ready >= room.players.length) {
+          room.rematch.clear();
+          const roster = room.players.map(p => ({ id: p.id, name: p.name, team: p.team }));
+          broadcast(room, { type: 'rematchStart', seed: Math.floor(Math.random() * 1e9), roster });
+        }
+        break;
+      }
+
       case 'leaveRoom':
         leaveRoom(ws);
         send(ws, { type: 'roomLeft' });
