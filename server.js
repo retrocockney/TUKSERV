@@ -26,6 +26,23 @@ const humansIn = queue => queue.filter(e => !e.bot);
 
 const randomSeed = () => Math.floor(Math.random() * 1e9);
 
+function getOnlinePlayers() {
+  const list = [];
+  for (const client of wss.clients) {
+    if (client.readyState === client.OPEN && !client.isObserver) {
+      list.push({ id: client.playerId, name: client.name || 'Player' });
+    }
+  }
+  return list;
+}
+
+function broadcastOnlinePlayers() {
+  const payload = { type: 'onlinePlayers', players: getOnlinePlayers() };
+  for (const client of wss.clients) {
+    send(client, payload);
+  }
+}
+
 function broadcast(room, msg, exceptId) {
   for (const p of room.players) {
     if (p.ws && p.id !== exceptId) send(p.ws, msg);
@@ -145,6 +162,12 @@ const isBotInRoom = (room, id) => room && room.players.some(p => p.id === id && 
 const handlers = {
   setName(ws, m) {
     ws.name = String(m.name || 'Player').trim().slice(0, MAX_NAME) || 'Player';
+    broadcastOnlinePlayers();
+  },
+  getPlayers(ws) {
+    ws.isObserver = true;
+    send(ws, { type: 'onlinePlayers', players: getOnlinePlayers() });
+    broadcastOnlinePlayers();
   },
   queue(ws, m) { joinQueue(ws, m.mode); },
   leaveQueue(ws) {
@@ -207,9 +230,11 @@ wss.on('connection', ws => {
   ws.name = 'Player';
   ws.roomId = null;
   ws.holdingE = false;
+  ws.isObserver = false;
   ws.on('error', err => console.error('Socket error:', err.message));
   console.log('Connected: ' + ws.playerId + ' (' + wss.clients.size + ' online)');
   send(ws, { type: 'hello', id: ws.playerId });
+  broadcastOnlinePlayers();
 
   ws.on('message', raw => {
     let msg;
@@ -227,6 +252,7 @@ wss.on('connection', ws => {
     console.log('Disconnected: ' + ws.playerId);
     removeFromQueues(ws);
     leaveRoom(ws);
+    broadcastOnlinePlayers();
   });
 });
 
