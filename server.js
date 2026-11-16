@@ -1,261 +1,378 @@
-// Tuk Tuk Madness: matchmaking and relay server
-// Players queue for 1v1, 2v2 or Monster Truck. When a queue fills, a room is made and everyone is told.
-// Browsers send their own tuk-tuk state and actions; the server relays them to the room.
-const { WebSocketServer } = require('ws');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tukdev — Online Player Manager</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 20px;
+    background: #0b0f1e;
+    color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .container {
+    max-width: 620px;
+    margin: 0 auto;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #23335a;
+  }
+  h1 {
+    margin: 0;
+    font-size: 24px;
+    letter-spacing: 1px;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  input {
+    background: #141d36;
+    color: #fff;
+    border: 1px solid #2f4a8a;
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 14px;
+  }
+  input#serverInput { flex: 1 1 240px; }
+  input#adminCodeInput { flex: 0 1 160px; }
+  button {
+    background: #2f4a8a;
+    color: #fff;
+    border: 1px solid #2f4a8a;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #3d5fb0; }
+  button.ban-btn {
+    background: #c0392b;
+    border-color: #c0392b;
+  }
+  button.ban-btn:hover:not(:disabled) { background: #e74c3c; }
+  button.unban-btn {
+    background: #27ae60;
+    border-color: #27ae60;
+  }
+  button.unban-btn:hover:not(:disabled) { background: #2ecc71; }
+  button:disabled {
+    background: #1b243d;
+    border-color: #263354;
+    color: #5d6c8f;
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: #b7c6e6;
+    background: #11182d;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid #1e2d52;
+    margin-bottom: 16px;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e74c3c;
+    flex-shrink: 0;
+  }
+  .dot.connected { background: #2ecc71; }
+  .dot.connecting { background: #f1c40f; }
+  .error-banner {
+    background: rgba(231, 76, 60, 0.2);
+    border: 1px solid #e74c3c;
+    color: #ff9c92;
+    padding: 9px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 14px;
+    display: none;
+  }
+  .card {
+    background: #11182d;
+    border: 1px solid #23335a;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 18px;
+  }
+  .card-header {
+    background: #182342;
+    padding: 11px 16px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: #9fb3df;
+    display: flex;
+    justify-content: space-between;
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  li {
+    padding: 11px 16px;
+    border-bottom: 1px solid #1c294a;
+    font-size: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  li:last-child { border-bottom: none; }
+  .name-label {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: #8fa3cf;
+    font-size: 14px;
+    justify-content: center;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>TUKDEV</h1>
+  </header>
 
-const PORT = process.env.PORT || 8080;
-const MODES = { '1v1': 2, '2v2': 4, truck: 4 };
-const BOT_FILL_MODES = new Set(['2v2', 'truck']); // queues where everyone holding E can fill with bots
-const MAX_NAME = 30;
+  <div class="controls">
+    <input id="serverInput" type="text" value="wss://tukserv.onrender.com" title="WebSocket Server URL">
+    <input id="adminCodeInput" type="password" placeholder="Admin code" title="Enter admin code to ban/unban">
+    <button id="btnRefresh">Refresh</button>
+  </div>
 
-const wss = new WebSocketServer({ port: PORT });
-const queues = { '1v1': [], '2v2': [], truck: [] }; // entries: { ws, name } or { bot: true, name }
-const rooms = new Map();
-let roomSeq = 1;
-let botSeq = 1;
-let botNameSeq = 1;
+  <div id="errorBanner" class="error-banner"></div>
 
-// ---------- Helpers ----------
-const send = (ws, msg) => {
-  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
-};
+  <div class="status-bar">
+    <span id="statusDot" class="dot"></span>
+    <span id="statusText">Connecting to server...</span>
+  </div>
 
-const roomOf = ws => (ws.roomId ? rooms.get(ws.roomId) : undefined);
+  <div class="card">
+    <div class="card-header">
+      <span>Online Players (A–Z)</span>
+      <span id="onlineCount">0 online</span>
+    </div>
+    <ul id="onlineList">
+      <li class="empty">Connecting...</li>
+    </ul>
+  </div>
 
-const humansIn = queue => queue.filter(e => !e.bot);
+  <div class="card">
+    <div class="card-header">
+      <span>Banned Usernames (A–Z)</span>
+      <span id="bannedCount">0 banned</span>
+    </div>
+    <ul id="bannedList">
+      <li class="empty">No banned usernames.</li>
+    </ul>
+  </div>
+</div>
 
-const randomSeed = () => Math.floor(Math.random() * 1e9);
+<script>
+(function () {
+  const serverInput = document.getElementById('serverInput');
+  const adminCodeInput = document.getElementById('adminCodeInput');
+  const btnRefresh = document.getElementById('btnRefresh');
+  const errorBanner = document.getElementById('errorBanner');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const onlineCount = document.getElementById('onlineCount');
+  const onlineList = document.getElementById('onlineList');
+  const bannedCount = document.getElementById('bannedCount');
+  const bannedList = document.getElementById('bannedList');
 
-function getOnlinePlayers() {
-  const list = [];
-  for (const client of wss.clients) {
-    if (client.readyState === client.OPEN && !client.isObserver) {
-      list.push({ id: client.playerId, name: client.name || 'Player' });
+  let ws = null;
+  let onlinePlayers = [];
+  let bannedUsernames = [];
+
+  function setStatus(text, state) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (state ? ' ' + state : '');
+  }
+
+  function showError(msg) {
+    if (!msg) {
+      errorBanner.style.display = 'none';
+      errorBanner.textContent = '';
+      return;
     }
+    errorBanner.textContent = msg;
+    errorBanner.style.display = 'block';
   }
-  return list;
-}
 
-function broadcastOnlinePlayers() {
-  const payload = { type: 'onlinePlayers', players: getOnlinePlayers() };
-  for (const client of wss.clients) {
-    send(client, payload);
-  }
-}
-
-function broadcast(room, msg, exceptId) {
-  for (const p of room.players) {
-    if (p.ws && p.id !== exceptId) send(p.ws, msg);
-  }
-}
-
-function removeFromQueues(ws) {
-  for (const mode of Object.keys(queues)) {
-    queues[mode] = queues[mode].filter(e => e.ws !== ws);
-  }
-}
-
-// Builds the roster: teams in 2v2, one random truck in Monster Truck
-function rosterFor(room) {
-  const truckIdx = room.mode === 'truck' ? Math.floor(Math.random() * room.players.length) : -1;
-  return room.players.map((p, idx) => {
-    let team = null;
-    let role = 'player';
-    if (room.mode === '2v2') team = p.team;
-    if (room.mode === 'truck') {
-      const isTruck = idx === truckIdx;
-      team = isTruck ? 'truck' : 'tuks';
-      role = isTruck ? 'truck' : 'tuk';
+  function getAdminCode() {
+    const typed = adminCodeInput.value.trim();
+    if (typed) return typed;
+    const prompted = window.prompt('Enter admin code to continue:');
+    if (prompted !== null) {
+      adminCodeInput.value = prompted.trim();
+      return adminCodeInput.value;
     }
-    return { id: p.id, name: p.name, bot: !!p.bot, team, role };
-  });
-}
+    return '';
+  }
 
-// ---------- Rooms ----------
-function createRoom(mode, entries) {
-  const id = 'room' + roomSeq++;
-  const room = { id, mode, players: [], rematch: new Set() };
-  entries.forEach((entry, idx) => {
-    const team = mode === '2v2' ? (idx < 2 ? 'blue' : 'orange') : null;
-    if (entry.bot) {
-      room.players.push({ id: 'bot-' + botSeq++, name: entry.name, team, ws: null, bot: true });
+  function sendCommand(type, name) {
+    showError('');
+    const key = getAdminCode();
+    if (!key) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showError('Not connected to server.');
+      return;
+    }
+    ws.send(JSON.stringify({ type, name, key }));
+  }
+
+  function createRow(name, isBanned) {
+    const li = document.createElement('li');
+
+    const span = document.createElement('span');
+    span.className = 'name-label';
+    span.textContent = name;
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+
+    const banBtn = document.createElement('button');
+    banBtn.className = 'ban-btn';
+    banBtn.textContent = 'Ban';
+    banBtn.disabled = isBanned;
+    if (!isBanned) {
+      banBtn.addEventListener('click', () => sendCommand('banUser', name));
+    }
+
+    const unbanBtn = document.createElement('button');
+    unbanBtn.className = 'unban-btn';
+    unbanBtn.textContent = 'Unban';
+    unbanBtn.disabled = !isBanned;
+    if (isBanned) {
+      unbanBtn.addEventListener('click', () => sendCommand('unbanUser', name));
+    }
+
+    actions.appendChild(banBtn);
+    actions.appendChild(unbanBtn);
+    li.appendChild(span);
+    li.appendChild(actions);
+    return li;
+  }
+
+  function render() {
+    const bannedSet = new Set(bannedUsernames.map(n => n.toLowerCase()));
+
+    const sortedOnline = onlinePlayers
+      .map(p => String(p.name || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    onlineCount.textContent = sortedOnline.length + ' online';
+    onlineList.innerHTML = '';
+    if (sortedOnline.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = 'No players currently online.';
+      onlineList.appendChild(empty);
     } else {
-      room.players.push({ id: entry.ws.playerId, name: entry.name, team, ws: entry.ws });
-      entry.ws.roomId = id;
+      sortedOnline.forEach(name => {
+        onlineList.appendChild(createRow(name, bannedSet.has(name.toLowerCase())));
+      });
     }
-  });
-  rooms.set(id, room);
 
-  const roster = rosterFor(room);
-  const seed = randomSeed();
-  for (const p of room.players) {
-    send(p.ws, { type: 'matchFound', roomId: id, mode, you: p.id, team: p.team, roster, seed });
-  }
-}
+    const sortedBanned = bannedUsernames
+      .map(n => String(n || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
-function leaveRoom(ws) {
-  const room = roomOf(ws);
-  if (!room) return;
-  room.players = room.players.filter(p => p.ws !== ws);
-  room.rematch.delete(ws.playerId);
-  ws.roomId = null;
-  broadcast(room, { type: 'playerLeft', id: ws.playerId });
-  if (!room.players.some(p => !p.bot)) rooms.delete(room.id); // no humans left: close the room
-}
-
-// ---------- Queues ----------
-function tryStart(mode) {
-  const need = MODES[mode];
-  const q = queues[mode];
-  if (q.length < need) return;
-  createRoom(mode, q.splice(0, need));
-}
-
-function joinQueue(ws, mode) {
-  if (!MODES[mode]) return;
-  // A player still attached to an old room (for example after a crash or a missed leave) is moved out first
-  if (roomOf(ws)) leaveRoom(ws);
-  removeFromQueues(ws);
-  ws.holdingE = false;
-  queues[mode].push({ ws, name: ws.name });
-  send(ws, { type: 'queued', mode, waiting: humansIn(queues[mode]).length });
-  tryStart(mode);
-}
-
-function setFillKey(ws, down) {
-  ws.holdingE = !!down;
-  for (const mode of BOT_FILL_MODES) {
-    if (queues[mode].some(e => e.ws === ws)) checkFill(mode);
-  }
-}
-
-// Bots fill the queue once every waiting human is holding E
-function checkFill(mode) {
-  const humans = humansIn(queues[mode]);
-  if (humans.length === 0) return;
-  const holding = humans.filter(e => e.ws.holdingE).length;
-  for (const e of humans) send(e.ws, { type: 'fillStatus', holding, total: humans.length });
-  if (holding === humans.length) {
-    const q = queues[mode];
-    while (q.length < MODES[mode]) q.push({ bot: true, name: 'BOT ' + botNameSeq++ });
-    tryStart(mode);
-  }
-}
-
-// ---------- Rematch ----------
-function requestRematch(ws) {
-  const room = roomOf(ws);
-  if (!room) return;
-  room.rematch.add(ws.playerId);
-  const humans = room.players.filter(p => !p.bot);
-  const ready = humans.filter(p => room.rematch.has(p.id)).length;
-  broadcast(room, { type: 'rematchVotes', ready, total: humans.length });
-  if (humans.length > 0 && ready === humans.length) {
-    room.rematch.clear();
-    broadcast(room, { type: 'rematchStart', seed: randomSeed(), roster: rosterFor(room) });
-  }
-}
-
-// ---------- Message handlers ----------
-const isBotInRoom = (room, id) => room && room.players.some(p => p.id === id && p.bot);
-
-const handlers = {
-  setName(ws, m) {
-    ws.name = String(m.name || 'Player').trim().slice(0, MAX_NAME) || 'Player';
-    broadcastOnlinePlayers();
-  },
-  getPlayers(ws) {
-    ws.isObserver = true;
-    send(ws, { type: 'onlinePlayers', players: getOnlinePlayers() });
-    broadcastOnlinePlayers();
-  },
-  queue(ws, m) { joinQueue(ws, m.mode); },
-  leaveQueue(ws) {
-    removeFromQueues(ws);
-    send(ws, { type: 'queueLeft' });
-  },
-  fillKey(ws, m) { setFillKey(ws, m.down); },
-  leaveRoom(ws) {
-    leaveRoom(ws);
-    send(ws, { type: 'roomLeft' });
-  },
-  rematch(ws) { requestRematch(ws); },
-  state(ws, m) {
-    const room = roomOf(ws);
-    if (!room) return;
-    broadcast(room, {
-      type: 'state', id: ws.playerId, x: m.x, y: m.y, z: m.z, heading: m.heading,
-      health: m.health, alive: m.alive, boosting: m.boosting, gunAim: m.gunAim
-    }, ws.playerId);
-  },
-  fire(ws, m) {
-    const room = roomOf(ws);
-    if (!room) return;
-    broadcast(room, { type: 'fire', id: ws.playerId, origin: m.origin, dir: m.dir }, ws.playerId);
-  },
-  // The browser that runs the bots reports their positions and shots
-  botState(ws, m) {
-    const room = roomOf(ws);
-    if (!isBotInRoom(room, m.id)) return;
-    broadcast(room, {
-      type: 'state', id: m.id, x: m.x, y: m.y, z: m.z, heading: m.heading,
-      health: m.health, alive: m.alive, boosting: m.boosting, gunAim: m.gunAim
-    }, ws.playerId);
-  },
-  botFire(ws, m) {
-    const room = roomOf(ws);
-    if (!isBotInRoom(room, m.id)) return;
-    broadcast(room, { type: 'fire', id: m.id, origin: m.origin, dir: m.dir }, ws.playerId);
-  },
-  hit(ws, m) {
-    const room = roomOf(ws);
-    if (!room) return;
-    broadcast(room, {
-      type: 'hit', shooter: m.by || ws.playerId, target: m.target,
-      damage: m.damage, trample: !!m.trample
-    });
-  },
-  barrel(ws, m) {
-    const room = roomOf(ws);
-    if (!room) return;
-    broadcast(room, { type: 'barrel', id: m.id, by: m.by }, ws.playerId);
-  }
-};
-
-// ---------- Connections ----------
-wss.on('error', err => console.error('Server error:', err.message));
-
-wss.on('connection', ws => {
-  ws.playerId = 'p' + Math.random().toString(36).slice(2, 8);
-  ws.name = 'Player';
-  ws.roomId = null;
-  ws.holdingE = false;
-  ws.isObserver = false;
-  ws.on('error', err => console.error('Socket error:', err.message));
-  console.log('Connected: ' + ws.playerId + ' (' + wss.clients.size + ' online)');
-  send(ws, { type: 'hello', id: ws.playerId });
-  broadcastOnlinePlayers();
-
-  ws.on('message', raw => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    const handler = handlers[msg.type];
-    if (!handler) return;
-    try {
-      handler(ws, msg);
-    } catch (err) {
-      console.error('Message error (' + msg.type + '):', err.stack);
+    bannedCount.textContent = sortedBanned.length + ' banned';
+    bannedList.innerHTML = '';
+    if (sortedBanned.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = 'No banned usernames.';
+      bannedList.appendChild(empty);
+    } else {
+      sortedBanned.forEach(name => {
+        bannedList.appendChild(createRow(name, true));
+      });
     }
-  });
+  }
 
-  ws.on('close', () => {
-    console.log('Disconnected: ' + ws.playerId);
-    removeFromQueues(ws);
-    leaveRoom(ws);
-    broadcastOnlinePlayers();
-  });
-});
+  function connect() {
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+    showError('');
+    onlinePlayers = [];
+    bannedUsernames = [];
+    render();
 
-console.log(`Tuk Tuk Madness server listening on port ${PORT}`);
-process.on('uncaughtException', err => console.error('Uncaught error:', err.stack));
-process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
+    const url = serverInput.value.trim();
+    if (!url) return;
+
+    setStatus('Connecting to ' + url + '...', 'connecting');
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      setStatus('Connected', 'connected');
+      ws.send(JSON.stringify({ type: 'getPlayers' }));
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+
+      if (msg.type === 'tukdevState') {
+        onlinePlayers = Array.isArray(msg.players) ? msg.players : [];
+        bannedUsernames = Array.isArray(msg.banned) ? msg.banned : [];
+        render();
+      } else if (msg.type === 'adminError') {
+        showError(msg.message || 'Action rejected by server.');
+      }
+    };
+
+    ws.onerror = () => {
+      setStatus('Could not connect to server.');
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      setStatus('Disconnected from server.');
+    };
+  }
+
+  btnRefresh.addEventListener('click', connect);
+  connect();
+})();
+</script>
+</body>
+</html>
