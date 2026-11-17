@@ -61,9 +61,7 @@ const send = (ws, msg) => {
 };
 
 const roomOf = ws => (ws.roomId ? rooms.get(ws.roomId) : undefined);
-
 const humansIn = queue => queue.filter(e => !e.bot);
-
 const randomSeed = () => Math.floor(Math.random() * 1e9);
 
 function getOnlinePlayers() {
@@ -109,9 +107,11 @@ function removeFromQueues(ws) {
   }
 }
 
+// Roster for a match. In Monster Truck one player (or a bot) is the truck and the rest are tuks.
+// The truck's ID is stored on the room so the server knows who the truck is if they leave.
 function rosterFor(room) {
   const truckIdx = room.mode === 'truck' ? Math.floor(Math.random() * room.players.length) : -1;
-  return room.players.map((p, idx) => {
+  const roster = room.players.map((p, idx) => {
     let team = null;
     let role = 'player';
     if (room.mode === '2v2') team = p.team;
@@ -122,12 +122,17 @@ function rosterFor(room) {
     }
     return { id: p.id, name: p.name, bot: !!p.bot, team, role };
   });
+  if (room.mode === 'truck') {
+    const t = roster.find(r => r.role === 'truck');
+    room.truckId = t ? t.id : null;
+  }
+  return roster;
 }
 
 // ---------- Rooms ----------
 function createRoom(mode, entries) {
   const id = 'room' + roomSeq++;
-  const room = { id, mode, players: [], rematch: new Set() };
+  const room = { id, mode, players: [], rematch: new Set(), truckId: null, over: false };
   entries.forEach((entry, idx) => {
     const team = mode === '2v2' ? (idx < 2 ? 'blue' : 'orange') : null;
     if (entry.bot) {
@@ -146,13 +151,31 @@ function createRoom(mode, entries) {
   }
 }
 
+function endRound(room, winner, reason) {
+  if (room.over) return;
+  room.over = true;
+  broadcast(room, { type: 'roundEnd', winner, reason });
+}
+
 function leaveRoom(ws) {
   const room = roomOf(ws);
   if (!room) return;
+  const wasTruck = room.mode === 'truck' && room.truckId === ws.playerId;
   room.players = room.players.filter(p => p.ws !== ws);
   room.rematch.delete(ws.playerId);
   ws.roomId = null;
   broadcast(room, { type: 'playerLeft', id: ws.playerId });
+
+  // Monster Truck rules when someone leaves a match that is still on:
+  // the truck leaves -> tuks win. Every tuk leaves -> truck wins.
+  if (room.mode === 'truck' && !room.over) {
+    if (wasTruck) {
+      endRound(room, 'tuks', 'The truck left the match');
+    } else if (!room.players.some(p => p.id !== room.truckId)) {
+      endRound(room, 'truck', 'All the tuks left the match');
+    }
+  }
+
   if (!room.players.some(p => !p.bot)) rooms.delete(room.id);
 }
 
@@ -207,6 +230,7 @@ function requestRematch(ws) {
   broadcast(room, { type: 'rematchVotes', ready, total: humans.length });
   if (humans.length > 0 && ready === humans.length) {
     room.rematch.clear();
+    room.over = false;
     broadcast(room, { type: 'rematchStart', seed: randomSeed(), roster: rosterFor(room) });
   }
 }
