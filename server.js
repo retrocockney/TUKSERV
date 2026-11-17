@@ -5,7 +5,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8080;
-const ADMIN_KEY = process.env.ADMIN_KEY || 'Valley47';
+const ADMIN_KEY = process.env.ADMIN_KEY || ''; // Set this in Render; admin actions stay disabled until configured.
 const BAN_FILE = path.join(__dirname, 'bans.json');
 const MODES = { '1v1': 2, '2v2': 4, ffa: 4, flight: 4, truck: 4 };
 const MAX_NAME = 30;
@@ -150,6 +150,9 @@ function createRoom(mode, entries) {
   const seed = randomSeed();
   for (const p of room.players) {
     send(p.ws, { type: 'matchFound', roomId: id, mode, you: p.id, team: p.team, roster, seed });
+    for (const other of room.players) {
+      if (other.id !== p.id && other.skin) send(p.ws, { type: 'skin', id: other.id, ...other.skin });
+    }
   }
 }
 
@@ -284,6 +287,9 @@ function customRoomJoin(ws, m) {
   const roster = rosterFor(room);
   send(ws, { type: 'customLobbyJoined', roomCode: room.code, hostId: room.ownerId, you: ws.playerId,
     mode: room.mode, map: room.map, maxPlayers: room.maxPlayers, roster, seed: randomSeed() });
+  for (const other of room.players) {
+    if (other.id !== ws.playerId && other.skin) send(ws, { type: 'skin', id: other.id, ...other.skin });
+  }
   notifyCustomRoom(room);
   broadcastCustomRoomList();
 }
@@ -344,7 +350,7 @@ const handlers = {
     broadcastStateToObservers();
   },
   banUser(ws, m) {
-    if (String(m.key || '') !== ADMIN_KEY) {
+    if (!ADMIN_KEY || String(m.key || '') !== ADMIN_KEY) {
       send(ws, { type: 'adminError', message: 'Invalid admin code.' });
       return;
     }
@@ -356,7 +362,7 @@ const handlers = {
     broadcastStateToObservers();
   },
   unbanUser(ws, m) {
-    if (String(m.key || '') !== ADMIN_KEY) {
+    if (!ADMIN_KEY || String(m.key || '') !== ADMIN_KEY) {
       send(ws, { type: 'adminError', message: 'Invalid admin code.' });
       return;
     }
@@ -380,6 +386,19 @@ const handlers = {
     send(ws, { type: 'roomLeft' });
   },
   rematch(ws) { requestRematch(ws); },
+  skin(ws, m) {
+    const room = roomOf(ws);
+    if (!room) return;
+    const color = Number.isInteger(m.color) ? (m.color >>> 0) & 0xffffff : 0x2ecc71;
+    let image = null;
+    if (typeof m.image === 'string' && /^data:image\/(?:jpeg|png|webp);base64,/i.test(m.image) && m.image.length <= 360000) {
+      image = m.image;
+    }
+    ws.skin = { color, image };
+    const player = room.players.find(p => p.id === ws.playerId);
+    if (player) player.skin = ws.skin;
+    broadcast(room, { type: 'skin', id: ws.playerId, color, image }, ws.playerId);
+  },
   state(ws, m) {
     const room = roomOf(ws);
     if (!room) return;
