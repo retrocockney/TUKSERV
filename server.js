@@ -1,4 +1,3 @@
-
 // Tuk Tuk Madness: matchmaking and relay server
 const fs = require('fs');
 const http = require('http');
@@ -9,6 +8,7 @@ const PORT = process.env.PORT || 8080;
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 const BAN_FILE = path.join(__dirname, 'bans.json');
 const MODES = { '1v1': 2, '2v2': 4, ffa: 4, flight: 4, truck: 4 };
+const MAPS = new Set(['original', 'mega', 'wrap']);
 const MAX_NAME = 30;
 
 const httpServer = http.createServer((req, res) => {
@@ -20,7 +20,7 @@ const httpServer = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
-const queues = { '1v1': [], '2v2': [], ffa: [], flight: [], truck: [] };
+const queues = {};
 const rooms = new Map();
 let roomSeq = 1;
 let botSeq = 1;
@@ -100,8 +100,8 @@ function broadcast(room, msg, exceptId) {
 }
 
 function removeFromQueues(ws) {
-  for (const mode of Object.keys(queues)) {
-    queues[mode] = queues[mode].filter(e => e.ws !== ws);
+  for (const key of Object.keys(queues)) {
+    queues[key] = queues[key].filter(e => e.ws !== ws);
   }
 }
 
@@ -139,10 +139,11 @@ function rosterFor(room) {
   return roster;
 }
 
-function createRoom(mode, entries) {
+function createRoom(mode, entries, map) {
   const id = 'room' + roomSeq++;
   const room = {
-    id, mode, players: [], rematch: new Set(),
+    id, mode, map: MAPS.has(map) ? map : 'original',
+    players: [], rematch: new Set(),
     truckId: null, over: false
   };
 
@@ -177,6 +178,7 @@ function createRoom(mode, entries) {
       type: 'matchFound',
       roomId: id,
       mode,
+      map: room.map,
       you: p.id,
       team: p.team,
       roster,
@@ -273,14 +275,16 @@ function leaveRoom(ws) {
   if (!room.players.some(p => !p.bot)) rooms.delete(room.id);
 }
 
-function tryStart(mode) {
+function tryStart(key) {
+  const mode = key.split('|')[0];
+  const map = key.split('|')[1];
   const need = MODES[mode];
-  const q = queues[mode];
-  if (q.length < need) return;
-  createRoom(mode, q.splice(0, need));
+  const q = queues[key];
+  if (!q || q.length < need) return;
+  createRoom(mode, q.splice(0, need), map);
 }
 
-function joinQueue(ws, mode) {
+function joinQueue(ws, mode, map) {
   if (isBanned(ws.name)) {
     try { ws.close(); } catch (_) {}
     return;
@@ -289,10 +293,14 @@ function joinQueue(ws, mode) {
   if (!MODES[mode]) return;
   if (roomOf(ws)) leaveRoom(ws);
 
+  const mapName = MAPS.has(map) ? map : 'original';
+  const key = mode + '|' + mapName;
+
   removeFromQueues(ws);
-  queues[mode].push({ ws, name: ws.name });
-  send(ws, { type: 'queued', mode, waiting: queues[mode].length });
-  tryStart(mode);
+  if (!queues[key]) queues[key] = [];
+  queues[key].push({ ws, name: ws.name });
+  send(ws, { type: 'queued', mode, map: mapName, waiting: queues[key].length });
+  tryStart(key);
 }
 
 const CUSTOM_MODES = new Set(['1v1', '2v2', 'ffa', 'flight', 'truck']);
@@ -314,7 +322,7 @@ function customRoomCreate(ws, m) {
 
   const mode = CUSTOM_MODES.has(m.mode) ? m.mode : 'ffa';
   const maxPlayers = Math.max(2, Math.min(16, Math.floor(Number(m.maxPlayers) || 2)));
-  const map = m.map === 'mega' ? 'mega' : 'original';
+  const map = MAPS.has(m.map) ? m.map : 'original';
 
   removeFromQueues(ws);
   leaveRoom(ws);
@@ -541,7 +549,7 @@ const handlers = {
     broadcastStateToObservers();
   },
 
-  queue(ws, m) { joinQueue(ws, m.mode); },
+  queue(ws, m) { joinQueue(ws, m.mode, m.map); },
   customCreate(ws, m) { customRoomCreate(ws, m); },
   customJoin(ws, m) { customRoomJoin(ws, m); },
   customList(ws) { send(ws, { type: 'customRooms', rooms: customRoomList() }); },
